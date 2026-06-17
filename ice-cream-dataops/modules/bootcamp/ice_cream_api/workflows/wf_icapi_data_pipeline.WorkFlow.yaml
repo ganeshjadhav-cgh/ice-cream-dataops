@@ -1,0 +1,3 @@
+externalId: wf_icapi_data_pipeline
+dataSetExternalId: {{ icapi_ds_external_id }}
+description: Orchestrates the ice cream API data pipeline, including asset hierarchy creation, time series contextualization, data extraction, and OEE time series calculation. 

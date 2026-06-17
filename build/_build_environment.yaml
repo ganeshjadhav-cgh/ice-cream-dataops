@@ -111,6 +111,29 @@ built_resources:
       hash: ad7e9d3f
     kind: Source
     destination: build/hosted_extractors/7.Source.yaml
+  workflows:
+  - identifier:
+      externalId: wf_icapi_data_pipeline
+    source:
+      path: /workspaces/ice-cream-dataops/ice-cream-dataops/modules/bootcamp/ice_cream_api/workflows/wf_icapi_data_pipeline.WorkFlow.yaml
+      hash: 3cde416a
+    kind: Workflow
+    destination: build/workflows/1.wf_icapi_data_pipeline.WorkFlow.yaml
+  - identifier:
+      externalId: icapi_trigger
+    source:
+      path: /workspaces/ice-cream-dataops/ice-cream-dataops/modules/bootcamp/ice_cream_api/workflows/wf_icapi_data_pipeline.WorkFlowTrigger.yaml
+      hash: 4bb02ead
+    kind: WorkflowTrigger
+    destination: build/workflows/2.wf_icapi_data_pipeline.WorkFlowTrigger.yaml
+  - identifier:
+      workflowExternalId: wf_icapi_data_pipeline
+      version: '1'
+    source:
+      path: /workspaces/ice-cream-dataops/ice-cream-dataops/modules/bootcamp/ice_cream_api/workflows/wf_icapi_data_pipeline.WorkflowVersion.yaml
+      hash: 52f3d292
+    kind: WorkflowVersion
+    destination: build/workflows/3.wf_icapi_data_pipeline.WorkflowVersion.yaml
   data_sets:
   - identifier:
       externalId: ds_icapi
@@ -214,17 +237,18 @@ read_modules:
   - auth
 - dir: /workspaces/ice-cream-dataops/ice-cream-dataops/modules/bootcamp/ice_cream_api
   resource_directories:
-  - functions
-  - auth
-  - extraction_pipelines
-  - data_sets
   - transformations
-  - hosted_extractors
+  - data_sets
+  - workflows
+  - functions
   - data_models
+  - hosted_extractors
+  - auth
   - raw
+  - extraction_pipelines
 - dir: /workspaces/ice-cream-dataops/ice-cream-dataops/modules/bootcamp/use_cases/oee
   resource_directories:
-  - auth
   - data_models
-  - functions
   - data_sets
+  - functions
+  - auth
