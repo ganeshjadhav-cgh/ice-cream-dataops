@@ -1,0 +1,141 @@
+from __future__ import annotations
+
+from collections.abc import Sequence
+from typing import Any, Literal, cast
+
+from cognite.client.data_classes._base import CogniteFilter, CogniteSort
+from cognite.client.data_classes.shared import TimestampRange
+from cognite.client.utils._text import to_camel_case
+from cognite.client.utils.useful_types import SequenceNotStr
+
+
+def _parse_str_or_sequence(value: str | SequenceNotStr[str] | None) -> list[str] | None:
+    if isinstance(value, str):
+        return [value]
+    elif isinstance(value, SequenceNotStr):
+        return list(value)
+    return None
+
+
+class SimulatorIntegrationFilter(CogniteFilter):
+    def __init__(
+        self,
+        simulator_external_ids: str | SequenceNotStr[str] | None = None,
+        active: bool | None = None,
+    ) -> None:
+        self.simulator_external_ids = (
+            [simulator_external_ids] if isinstance(simulator_external_ids, str) else simulator_external_ids
+        )
+        self.active = active
+
+
+class SimulatorModelsFilter(CogniteFilter):
+    def __init__(
+        self,
+        simulator_external_ids: str | SequenceNotStr[str] | None = None,
+    ) -> None:
+        self.simulator_external_ids = (
+            [simulator_external_ids] if isinstance(simulator_external_ids, str) else simulator_external_ids
+        )
+
+
+class SimulatorModelRevisionsFilter(CogniteFilter):
+    def __init__(
+        self,
+        model_external_ids: str | SequenceNotStr[str] | None = None,
+        all_versions: bool | None = None,
+        created_time: TimestampRange | None = None,
+        last_updated_time: TimestampRange | None = None,
+    ) -> None:
+        self.model_external_ids = [model_external_ids] if isinstance(model_external_ids, str) else model_external_ids
+        self.all_versions = all_versions
+        self.created_time = created_time
+        self.last_updated_time = last_updated_time
+
+
+class SimulatorRunsFilter(CogniteFilter):
+    def __init__(
+        self,
+        status: str | None = None,
+        run_type: str | None = None,
+        model_external_ids: str | SequenceNotStr[str] | None = None,
+        simulator_integration_external_ids: str | SequenceNotStr[str] | None = None,
+        simulator_external_ids: str | SequenceNotStr[str] | None = None,
+        routine_external_ids: str | SequenceNotStr[str] | None = None,
+        routine_revision_external_ids: str | SequenceNotStr[str] | None = None,
+        model_revision_external_ids: str | SequenceNotStr[str] | None = None,
+        created_time: TimestampRange | None = None,
+        simulation_time: TimestampRange | None = None,
+    ) -> None:
+        self.model_external_ids = _parse_str_or_sequence(model_external_ids)
+        self.simulator_integration_external_ids = _parse_str_or_sequence(simulator_integration_external_ids)
+        self.simulator_external_ids = _parse_str_or_sequence(simulator_external_ids)
+        self.routine_external_ids = _parse_str_or_sequence(routine_external_ids)
+        self.routine_revision_external_ids = _parse_str_or_sequence(routine_revision_external_ids)
+        self.model_revision_external_ids = _parse_str_or_sequence(model_revision_external_ids)
+        self.status = status
+        self.run_type = run_type
+        self.created_time = created_time
+        self.simulation_time = simulation_time
+
+
+class SimulatorRoutinesFilter(CogniteFilter):
+    def __init__(
+        self,
+        model_external_ids: Sequence[str] | None = None,
+        simulator_integration_external_ids: Sequence[str] | None = None,
+        kind: Literal["long"] | None = None,
+    ) -> None:
+        self.model_external_ids = model_external_ids
+        self.simulator_integration_external_ids = simulator_integration_external_ids
+        self.kind = kind
+
+
+class PropertySort(CogniteSort):
+    def __init__(
+        self,
+        property: Literal["created_time"] = "created_time",
+        order: Literal["asc", "desc"] = "asc",
+    ):
+        super().__init__(property, order)
+
+    def dump(self, camel_case: bool = True) -> dict[str, Any]:
+        dumped = super().dump(camel_case=camel_case)
+        prop = cast(str, self.property)
+        dumped["property"] = to_camel_case(prop) if camel_case else prop
+        return dumped
+
+
+class SimulationRunsSort(CogniteSort):
+    def __init__(
+        self,
+        property: Literal["created_time", "simulation_time"] = "created_time",
+        order: Literal["asc", "desc"] = "asc",
+    ):
+        super().__init__(property, order)
+
+    def dump(self, camel_case: bool = True) -> dict[str, Any]:
+        dumped = super().dump(camel_case=camel_case)
+        prop = cast(str, self.property)
+        dumped["property"] = to_camel_case(prop) if camel_case else prop
+        return dumped
+
+
+class SimulatorRoutineRevisionsFilter(CogniteFilter):
+    def __init__(
+        self,
+        routine_external_ids: SequenceNotStr[str] | None = None,
+        all_versions: bool | None = None,
+        model_external_ids: SequenceNotStr[str] | None = None,
+        simulator_integration_external_ids: SequenceNotStr[str] | None = None,
+        simulator_external_ids: SequenceNotStr[str] | None = None,
+        kind: Literal["long"] | None = None,
+        created_time: TimestampRange | None = None,
+    ) -> None:
+        self.model_external_ids = model_external_ids
+        self.all_versions = all_versions
+        self.routine_external_ids = routine_external_ids
+        self.simulator_integration_external_ids = simulator_integration_external_ids
+        self.simulator_external_ids = simulator_external_ids
+        self.kind = kind
+        self.created_time = created_time

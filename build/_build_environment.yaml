@@ -30,6 +30,14 @@ built_resources:
       hash: 701e1a5b
     kind: Group
     destination: build/auth/3.data_pipeline_oee.Group.yaml
+  extraction_pipelines:
+  - identifier:
+      externalId: ep_icapi_datapoints
+    source:
+      path: /workspaces/ice-cream-dataops/ice-cream-dataops/modules/bootcamp/ice_cream_api/extraction_pipelines/ep_icapi_datapoints.ExtractionPipeline.yaml
+      hash: 1a1814d6
+    kind: ExtractionPipeline
+    destination: build/extraction_pipelines/1.ep_icapi_datapoints.ExtractionPipeline.yaml
   raw:
   - identifier:
       dbName: ice-cream-factory-db
@@ -133,22 +141,90 @@ built_resources:
       hash: 4424ed7c
     kind: Space
     destination: build/data_models/2.oee_timeseries.space.yaml
-  functions: []
+  transformations:
+  - identifier:
+      externalId: contextualize_ts_assets
+    source:
+      path: /workspaces/ice-cream-dataops/ice-cream-dataops/modules/bootcamp/ice_cream_api/transformations/contextualize_ts_assets.Transformation.yaml
+      hash: ee0f6dbb
+    kind: Transformation
+    destination: build/transformations/1.contextualize_ts_assets.Transformation.yaml
+    extra_sources:
+    - path: /workspaces/ice-cream-dataops/ice-cream-dataops/modules/bootcamp/ice_cream_api/transformations/contextualize_ts_assets.Transformation.sql
+      hash: 5bc0c92b
+  - identifier:
+      externalId: create_asset_hierarchy
+    source:
+      path: /workspaces/ice-cream-dataops/ice-cream-dataops/modules/bootcamp/ice_cream_api/transformations/create_asset_hierarchy.Transformation.yaml
+      hash: 17a2e0e8
+    kind: Transformation
+    destination: build/transformations/3.create_asset_hierarchy.Transformation.yaml
+    extra_sources:
+    - path: /workspaces/ice-cream-dataops/ice-cream-dataops/modules/bootcamp/ice_cream_api/transformations/create_asset_hierarchy.Transformation.sql
+      hash: 5f9044ee
+  - identifier:
+      externalId: create_asset_hierarchy
+    source:
+      path: /workspaces/ice-cream-dataops/ice-cream-dataops/modules/bootcamp/ice_cream_api/transformations/create_asset_hierarchy.schedule.yaml
+      hash: 932ce3bf
+    kind: Schedule
+    destination: build/transformations/5.create_asset_hierarchy.schedule.yaml
+  functions:
+  - identifier:
+      externalId: icapi_datapoints_extractor
+    source:
+      path: /workspaces/ice-cream-dataops/ice-cream-dataops/modules/bootcamp/ice_cream_api/functions/functions.Function.yaml
+      hash: 4fcaffc5
+    kind: Function
+    destination: build/functions/1.functions.Function.yaml
+  - identifier:
+      functionExternalId: icapi_datapoints_extractor
+      name: Frontfill every 10 minutes for the last hour of data (streamer)
+    source:
+      path: /workspaces/ice-cream-dataops/ice-cream-dataops/modules/bootcamp/ice_cream_api/functions/schedules.Schedule.yaml
+      hash: 8a8fdd81
+    kind: Schedule
+    destination: build/functions/2.schedules.Schedule.yaml
+  - identifier:
+      functionExternalId: icapi_datapoints_extractor
+      name: Backfill all sites once a day for the last 5 days (gap filling)
+    source:
+      path: /workspaces/ice-cream-dataops/ice-cream-dataops/modules/bootcamp/ice_cream_api/functions/schedules.Schedule.yaml
+      hash: 8a8fdd81
+    kind: Schedule
+    destination: build/functions/2.schedules.Schedule.yaml
+  - identifier:
+      externalId: oee_timeseries
+    source:
+      path: /workspaces/ice-cream-dataops/ice-cream-dataops/modules/bootcamp/use_cases/oee/functions/functions.Function.yaml
+      hash: b4795e39
+    kind: Function
+    destination: build/functions/3.functions.Function.yaml
+  - identifier:
+      functionExternalId: oee_timeseries
+      name: Run calculations every 5 minutes for last hour of data
+    source:
+      path: /workspaces/ice-cream-dataops/ice-cream-dataops/modules/bootcamp/use_cases/oee/functions/schedules.Schedule.yaml
+      hash: 0cc26f4c
+    kind: Schedule
+    destination: build/functions/4.schedules.Schedule.yaml
 read_modules:
 - dir: /workspaces/ice-cream-dataops/ice-cream-dataops/modules/bootcamp/data_foundation
   resource_directories:
   - auth
 - dir: /workspaces/ice-cream-dataops/ice-cream-dataops/modules/bootcamp/ice_cream_api
   resource_directories:
-  - hosted_extractors
   - functions
-  - data_models
   - auth
-  - raw
+  - extraction_pipelines
   - data_sets
+  - transformations
+  - hosted_extractors
+  - data_models
+  - raw
 - dir: /workspaces/ice-cream-dataops/ice-cream-dataops/modules/bootcamp/use_cases/oee
   resource_directories:
   - auth
-  - data_sets
-  - functions
   - data_models
+  - functions
+  - data_sets

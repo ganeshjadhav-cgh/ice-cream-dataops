@@ -8,6 +8,7 @@ destination:
     destinationType: CogniteAsset
   instanceSpace: icapi_dm_space
   type: instances
+dataSetExternalId: {{ icapi_ds_external_id }}
 ignoreNullFields: true
 isPublic: true
 conflictMode: upsert

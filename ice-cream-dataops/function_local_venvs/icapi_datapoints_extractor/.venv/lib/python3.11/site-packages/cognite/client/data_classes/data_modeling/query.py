@@ -1,0 +1,712 @@
+from __future__ import annotations
+
+import warnings
+from abc import ABC, abstractmethod
+from collections import UserDict
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Literal
+
+from typing_extensions import Self, assert_never
+
+from cognite.client.data_classes._base import CogniteObject, UnknownCogniteObject
+from cognite.client.data_classes.data_modeling.ids import ContainerId, PropertyId, ViewId, ViewIdentifier
+from cognite.client.data_classes.data_modeling.instances import (
+    Edge,
+    EdgeListWithCursor,
+    InstanceSort,
+    Node,
+    NodeListWithCursor,
+    PropertyValue,
+    TargetUnit,
+    TypeInformation,
+)
+from cognite.client.data_classes.data_modeling.views import View
+from cognite.client.data_classes.filters import Filter
+from cognite.client.utils.useful_types import SequenceNotStr
+
+if TYPE_CHECKING:
+    from cognite.client import CogniteClient
+    from cognite.client.data_classes.data_modeling.debug import DebugInfo
+
+
+@dataclass
+class SourceSelector(CogniteObject):
+    source: ViewId
+    properties: list[str] | None = None
+    target_units: list[TargetUnit] | None = None
+
+    def dump(self, camel_case: bool = True) -> dict[str, Any]:
+        output: dict[str, Any] = {"source": self.source.dump(camel_case)}
+        if self.properties is not None:
+            output["properties"] = self.properties
+        if self.target_units:
+            output["targetUnits" if camel_case else "target_units"] = [
+                unit.dump(camel_case) for unit in self.target_units
+            ]
+        return output
+
+    @classmethod
+    def _load(
+        cls,
+        resource: dict[str, Any] | SourceSelector | ViewIdentifier | View,
+        cognite_client: CogniteClient | None = None,
+    ) -> Self:
+        if isinstance(resource, cls):
+            return resource
+        elif isinstance(resource, dict):
+            if "source" in resource:
+                view_id = ViewId.load(resource["source"])
+            else:
+                # This is in case only a ViewId is passed in.
+                view_id = ViewId.load(resource)
+            return cls(
+                source=view_id,
+                properties=resource.get("properties"),
+                target_units=[TargetUnit.load(unit) for unit in resource.get("targetUnits", [])] or None,
+            )
+
+        if isinstance(resource, View):
+            view_id = resource.as_id()
+        else:
+            view_id = ViewId.load(resource)  # type: ignore[arg-type]
+        return cls(source=view_id)
+
+    @classmethod
+    def _load_list(
+        cls, data: ViewIdentifier | View | SourceSelector | Sequence[ViewIdentifier | View | SourceSelector]
+    ) -> list[SourceSelector]:
+        if isinstance(data, (View, SourceSelector, ViewId)) or (
+            isinstance(data, tuple) and 2 <= len(data) <= 3 and all(isinstance(v, str) for v in data)
+        ):
+            data = [data]
+
+        return [cls._load(v) for v in data]  # type: ignore[arg-type]
+
+
+@dataclass
+class Select(CogniteObject):
+    sources: list[SourceSelector] = field(default_factory=list)
+    sort: list[InstanceSort] = field(default_factory=list)
+    limit: int | None = None
+
+    def dump(self, camel_case: bool = True) -> dict[str, Any]:
+        output: dict[str, Any] = {}
+        if self.sources:
+            output["sources"] = [source.dump(camel_case) for source in self.sources]
+        if self.sort:
+            output["sort"] = [s.dump(camel_case) for s in self.sort]
+        if self.limit:
+            output["limit"] = self.limit
+        return output
+
+    @classmethod
+    def _load(cls, resource: dict[str, Any], cognite_client: CogniteClient | None = None) -> Self:
+        return cls(
+            sources=[SourceSelector.load(source) for source in resource.get("sources", [])],
+            sort=[InstanceSort.load(s) for s in resource.get("sort", [])],
+            limit=resource.get("limit"),
+        )
+
+    def _validate_for_sync(self, name: str) -> None:
+        if self.sort:
+            raise ValueError(f"Select expression '{name}' has sort set, which is not allowed for the sync endpoint.")
+        if self.limit is not None:
+            raise ValueError(f"Select expression '{name}' has limit set, which is not allowed for the sync endpoint.")
+
+
+class Query(CogniteObject):
+    r"""Query allows you to do advanced queries on the data model.
+
+    Args:
+        with_ (dict[str, ResultSetExpression]): A dictionary of result set expressions to use in the query. The keys are used to reference the result set expressions in the select and parameters.
+        select (dict[str, Select]): A dictionary of select expressions to use in the query. The keys must match the keys in the with\_ dictionary. The select expressions define which properties to include in the result set.
+        parameters (dict[str, PropertyValue] | None): Values in filters can be parameterised. Parameters are provided as part of the query object, and referenced in the filter itself.
+        cursors (Mapping[str, str | None] | None): A dictionary of cursors to use in the query. These are for pagination purposes, for example, in the sync endpoint.
+    """
+
+    def __init__(
+        self,
+        with_: dict[str, ResultSetExpression],
+        select: dict[str, Select],
+        parameters: dict[str, PropertyValue] | None = None,
+        cursors: Mapping[str, str | None] | None = None,
+    ) -> None:
+        if not_matching := set(select) - set(with_):
+            raise ValueError(
+                f"The select keys must match the with keys, the following are not matching: {not_matching}"
+            )
+        self.with_ = with_
+        self.select = select
+        self.parameters = parameters
+        self.cursors = cursors or dict.fromkeys(select)
+
+    def instance_type_by_result_expression(self) -> dict[str, type[NodeListWithCursor] | type[EdgeListWithCursor]]:
+        return {
+            k: NodeListWithCursor if isinstance(v, NodeResultSetExpression) else EdgeListWithCursor
+            for k, v in self.with_.items()
+        }
+
+    def dump(self, camel_case: bool = True) -> dict[str, Any]:
+        output: dict[str, Any] = {
+            "with": {k: v.dump(camel_case) for k, v in self.with_.items()},
+            "select": {k: v.dump(camel_case) for k, v in self.select.items()},
+        }
+        if self.parameters:
+            output["parameters"] = dict(self.parameters.items())
+        if self.cursors:
+            output["cursors"] = dict(self.cursors.items())
+        return output
+
+    @classmethod
+    def load_yaml(cls, data: str) -> Query:
+        warnings.warn(
+            "Query.load_yaml is deprecated and will be removed after Oct 2024, please use Query.load",
+            UserWarning,
+        )
+        return cls.load(data)
+
+    def _validate_for_query(self) -> None:
+        """Ensures that the Query object is valid for use in the query endpoint (not sync)."""
+        for name, result_set_expression in self.with_.items():
+            result_set_expression._validate_for_query(name)
+
+    def _validate_for_sync(self) -> None:
+        """Ensures that the Query object is valid for use in the sync endpoint."""
+        for name, result_set_expression in self.with_.items():
+            result_set_expression._validate_for_sync(name)
+        for name, select in self.select.items():
+            select._validate_for_sync(name)
+
+    @classmethod
+    def _load(cls, resource: dict[str, Any], cognite_client: CogniteClient | None = None) -> Self:
+        parameters = dict(resource["parameters"].items()) if "parameters" in resource else None
+        cursors = dict(resource["cursors"].items()) if "cursors" in resource else None
+        return cls(
+            with_={k: ResultSetExpression.load(v) for k, v in resource["with"].items()},
+            select={k: Select.load(v) for k, v in resource["select"].items()},
+            parameters=parameters,
+            cursors=cursors,
+        )
+
+    def __eq__(self, other: Any) -> bool:
+        return type(other) is type(self) and self.dump() == other.dump()
+
+
+class ResultSetExpression(CogniteObject, ABC):
+    @classmethod
+    def _load(cls, resource: dict[str, Any], cognite_client: CogniteClient | None = None) -> ResultSetExpression:
+        if "nodes" in resource:
+            return NodeResultSetExpression._load(resource, cognite_client)
+        elif "edges" in resource:
+            return EdgeResultSetExpression._load(resource, cognite_client)
+        elif "union" in resource or "unionAll" in resource or "intersection" in resource:
+            return SetOperation._load(resource, cognite_client)
+        else:
+            return UnknownCogniteObject.load(resource)  # type: ignore[return-value]
+
+    @abstractmethod
+    def _validate_for_query(self, name: str) -> None:
+        pass
+
+    @abstractmethod
+    def _validate_for_sync(self, name: str) -> None:
+        pass
+
+
+SyncMode = Literal["one_phase", "two_phase", "no_backfill"]
+
+
+class NodeOrEdgeResultSetExpression(ResultSetExpression, ABC):
+    def __init__(
+        self,
+        from_: str | None,
+        filter: Filter | None,
+        limit: int | None,
+        sort: list[InstanceSort] | None,
+        direction: Literal["outwards", "inwards"] = "outwards",
+        chain_to: Literal["destination", "source"] = "destination",
+        skip_already_deleted: bool = True,
+        sync_mode: SyncMode | None = None,
+        backfill_sort: list[InstanceSort] | None = None,
+    ):
+        self.from_ = from_
+        self.filter = filter
+        self.limit = limit
+        self.sort = sort
+        self.direction = direction
+        self.chain_to = chain_to
+        self.skip_already_deleted = skip_already_deleted
+        self.sync_mode = sync_mode
+        self.backfill_sort = backfill_sort
+
+    @staticmethod
+    def _load_sync_mode(sync_mode: str | None) -> SyncMode | None:
+        match sync_mode:
+            case None:
+                return None
+            case "onePhase":
+                return "one_phase"
+            case "twoPhase":
+                return "two_phase"
+            case "noBackfill":
+                return "no_backfill"
+            case _:
+                raise ValueError(f"Invalid sync mode {sync_mode}")
+
+    @staticmethod
+    def _dump_sync_mode(sync_mode: SyncMode, camel_case: bool = True) -> str:
+        match sync_mode:
+            case "one_phase":
+                return "onePhase" if camel_case else "one_phase"
+            case "two_phase":
+                return "twoPhase" if camel_case else "two_phase"
+            case "no_backfill":
+                return "noBackfill" if camel_case else "no_backfill"
+            case _:
+                assert_never(sync_mode)
+
+    @staticmethod
+    def _load_sort(resource: dict[str, Any], name: str) -> list[InstanceSort]:
+        return [InstanceSort.load(sort) for sort in resource.get(name, [])]
+
+    def _validate_for_query(self, name: str) -> None:
+        if self.sync_mode is not None:
+            raise ValueError(
+                f"Result set expression '{name}' has sync_mode set, which is not allowed for the query endpoint."
+            )
+        if self.backfill_sort:
+            raise ValueError(
+                f"Result set expression '{name}' has backfill_sort set, which is not allowed for the query endpoint."
+            )
+        if not self.skip_already_deleted:
+            raise ValueError(
+                f"Result set expression '{name}' has skip_already_deleted set, which is not allowed for the query endpoint."
+            )
+
+    def _validate_for_sync(self, name: str) -> None:
+        if self.sort:
+            raise ValueError(
+                f"Result set expression '{name}' has sort set, which is not allowed for the sync endpoint."
+            )
+
+
+class NodeResultSetExpression(NodeOrEdgeResultSetExpression):
+    """Describes how to query for nodes in the data model.
+
+    Args:
+        from_ (str | None): Chain your result-expression based on this view.
+        filter (Filter | None): Filter the result set based on this filter.
+        sort (list[InstanceSort] | None): Sort the result set based on this list of sort criteria.
+        limit (int | None): Limit the result set to this number of instances.
+        through (list[str] | tuple[str, str, str] | PropertyId | None): Chain your result-expression through this container or view. The property must be a reference to a direct relation property. `from_` must be defined. The tuple must be on the form (space, container, property) or (space, view/version, property).
+        direction (Literal['outwards', 'inwards']): The direction to use when traversing direct relations. Only applicable when through is specified.
+        chain_to (Literal['destination', 'source']): Control which side of the edge to chain to. The chain_to option is only applicable if the result rexpression referenced in `from` contains edges. `source` will chain to start if you're following edges outwards i.e `direction=outwards`. If you're following edges inwards i.e `direction=inwards`, it will chain to end. `destination` (default) will chain to end if you're following edges outwards i.e `direction=outwards`. If you're following edges inwards i.e, `direction=inwards`, it will chain to start.
+        skip_already_deleted (bool): If set to False, the API will return instances that have been soft deleted before sync was initiated. Soft deletes that happen after the sync is initiated and a cursor generated, are always included in the result. Soft deleted instances are identified by having deletedTime set.
+        sync_mode (Literal['one_phase', 'two_phase', 'no_backfill'] | None): Specify whether to sync instances in a single phase; in a backfill phase followed by live updates, or without any backfill. Only valid for sync operations.
+        backfill_sort (list[InstanceSort] | None): Sort the result set during the backfill phase of a two phase sync. Only valid with sync_mode = "two_phase". The sort must be backed by a cursorable index.
+    """
+
+    def __init__(
+        self,
+        from_: str | None = None,
+        filter: Filter | None = None,
+        sort: list[InstanceSort] | None = None,
+        limit: int | None = None,
+        through: list[str] | tuple[str, str, str] | PropertyId | None = None,
+        direction: Literal["outwards", "inwards"] = "outwards",
+        chain_to: Literal["destination", "source"] = "destination",
+        skip_already_deleted: bool = True,
+        sync_mode: Literal["one_phase", "two_phase", "no_backfill"] | None = None,
+        backfill_sort: list[InstanceSort] | None = None,
+    ) -> None:
+        super().__init__(
+            from_=from_,
+            filter=filter,
+            limit=limit,
+            sort=sort,
+            direction=direction,
+            chain_to=chain_to,
+            skip_already_deleted=skip_already_deleted,
+            sync_mode=sync_mode,
+            backfill_sort=backfill_sort,
+        )
+        self.through: PropertyId | None = self._init_through(through)
+
+    def _init_through(self, through: list[str] | tuple[str, str, str] | PropertyId | None) -> PropertyId | None:
+        if isinstance(through, PropertyId):
+            return through
+        if isinstance(through, (list, tuple)):
+            if len(through) != 3:
+                raise ValueError(
+                    f"`through` must be on the form (space, container, property) or (space, view/version, property), was {self.through}"
+                )
+            # set source to ViewId if '/' in through[1] , else set it to ContainerId
+            source: ViewId | ContainerId = (
+                ViewId(space=through[0], external_id=through[1].split("/")[0], version=through[1].split("/")[1])
+                if "/" in through[1]
+                else ContainerId(space=through[0], external_id=through[1])
+            )
+            return PropertyId(source=source, property=through[2])
+        return None
+
+    @classmethod
+    def _load(cls, resource: dict[str, Any], cognite_client: CogniteClient | None = None) -> Self:
+        query_node = resource["nodes"]
+        through = query_node.get("through")
+        return cls(
+            from_=query_node.get("from"),
+            filter=Filter.load(query_node["filter"]) if "filter" in query_node else None,
+            chain_to=query_node.get("chainTo"),
+            direction=query_node.get("direction"),
+            through=PropertyId.load(through) if through is not None else None,
+            sort=cls._load_sort(resource, "sort"),
+            limit=resource.get("limit"),
+            skip_already_deleted=resource.get("skipAlreadyDeleted", True),
+            sync_mode=cls._load_sync_mode(resource.get("mode")),
+            backfill_sort=cls._load_sort(resource, "backfillSort"),
+        )
+
+    def dump(self, camel_case: bool = True) -> dict[str, Any]:
+        nodes: dict[str, Any] = {}
+        if self.from_:
+            nodes["from"] = self.from_
+        if self.filter is not None:
+            nodes["filter"] = self.filter.dump()
+        if self.through:
+            nodes["through"] = self.through.dump(camel_case=camel_case)
+        if self.chain_to:
+            nodes["chainTo" if camel_case else "chain_to"] = self.chain_to
+        if self.direction:
+            nodes["direction"] = self.direction
+
+        output: dict[str, Any] = {"nodes": nodes}
+        if self.sort:
+            output["sort"] = [s.dump(camel_case=camel_case) for s in self.sort]
+        if self.limit:
+            output["limit"] = self.limit
+        if not self.skip_already_deleted:
+            output["skipAlreadyDeleted" if camel_case else "skip_already_deleted"] = self.skip_already_deleted
+        if self.sync_mode:
+            output["mode"] = self._dump_sync_mode(self.sync_mode, camel_case=camel_case)
+        if self.backfill_sort:
+            output["backfillSort" if camel_case else "backfill_sort"] = [
+                s.dump(camel_case=camel_case) for s in self.backfill_sort
+            ]
+
+        return output
+
+
+class EdgeResultSetExpression(NodeOrEdgeResultSetExpression):
+    """Describes how to query for edges in the data model.
+
+    Args:
+        from_ (str | None): Chain your result expression from this edge.
+        max_distance (int | None): The largest - max - number of levels to traverse.
+        direction (Literal['outwards', 'inwards']): The direction to use when traversing.
+        filter (Filter | None): Filter the result set based on this filter.
+        node_filter (Filter | None): Filter the result set based on this filter.
+        termination_filter (Filter | None): Filter the result set based on this filter.
+        limit_each (int | None): Limit the number of returned edges for each of the source nodes in the result set. The indicated uniform limit applies to the result set from the referenced from. limitEach only has meaning when you also specify maxDistance=1 and from.
+        sort (list[InstanceSort] | None): Sort the result set based on this list of sort criteria.
+        post_sort (list[InstanceSort] | None): Sort the result set based on this list of sort criteria.
+        limit (int | None): Limit the result set to this number of instances.
+        chain_to (Literal['destination', 'source']): Control which side of the edge to chain to. The chain_to option is only applicable if the result rexpression referenced in `from` contains edges. `source` will chain to start if you're following edges outwards i.e `direction=outwards`. If you're following edges inwards i.e `direction=inwards`, it will chain to end. `destination` (default) will chain to end if you're following edges outwards i.e `direction=outwards`. If you're following edges inwards i.e, `direction=inwards`, it will chain to start.
+        skip_already_deleted (bool): If set to False, the API will return instances that have been soft deleted before sync was initiated. Soft deletes that happen after the sync is initiated and a cursor generated, are always included in the result. Soft deleted instances are identified by having deletedTime set.
+        sync_mode (Literal['one_phase', 'two_phase', 'no_backfill'] | None): Specify whether to sync instances in a single phase; in a backfill phase followed by live updates, or without any backfill. Only valid for sync operations.
+        backfill_sort (list[InstanceSort] | None): Sort the result set during the backfill phase of a two phase sync. Only valid with sync_mode = "two_phase". The sort must be backed by a cursorable index.
+    """
+
+    def __init__(
+        self,
+        from_: str | None = None,
+        max_distance: int | None = None,
+        direction: Literal["outwards", "inwards"] = "outwards",
+        filter: Filter | None = None,
+        node_filter: Filter | None = None,
+        termination_filter: Filter | None = None,
+        limit_each: int | None = None,
+        sort: list[InstanceSort] | None = None,
+        post_sort: list[InstanceSort] | None = None,
+        limit: int | None = None,
+        chain_to: Literal["destination", "source"] = "destination",
+        skip_already_deleted: bool = True,
+        sync_mode: Literal["one_phase", "two_phase", "no_backfill"] | None = None,
+        backfill_sort: list[InstanceSort] | None = None,
+    ) -> None:
+        super().__init__(
+            from_=from_,
+            filter=filter,
+            limit=limit,
+            sort=sort,
+            direction=direction,
+            chain_to=chain_to,
+            skip_already_deleted=skip_already_deleted,
+            sync_mode=sync_mode,
+            backfill_sort=backfill_sort,
+        )
+        self.max_distance = max_distance
+        self.node_filter = node_filter
+        self.termination_filter = termination_filter
+        self.limit_each = limit_each
+        self.post_sort = post_sort
+
+    @classmethod
+    def _load(cls, resource: dict[str, Any], cognite_client: CogniteClient | None = None) -> Self:
+        query_edge = resource["edges"]
+        term_flt = Filter.load(query_edge["terminationFilter"]) if "terminationFilter" in query_edge else None
+        return cls(
+            from_=query_edge.get("from"),
+            max_distance=query_edge.get("maxDistance"),
+            direction=query_edge.get("direction"),
+            filter=Filter.load(query_edge["filter"]) if "filter" in query_edge else None,
+            node_filter=Filter.load(query_edge["nodeFilter"]) if "nodeFilter" in query_edge else None,
+            termination_filter=term_flt,
+            limit_each=query_edge.get("limitEach"),
+            chain_to=query_edge.get("chainTo"),
+            sort=cls._load_sort(resource, "sort"),
+            post_sort=cls._load_sort(resource, "postSort"),
+            limit=resource.get("limit"),
+            skip_already_deleted=resource.get("skipAlreadyDeleted", True),
+            sync_mode=cls._load_sync_mode(resource.get("mode")),
+            backfill_sort=cls._load_sort(resource, "backfillSort"),
+        )
+
+    def dump(self, camel_case: bool = True) -> dict[str, Any]:
+        edges: dict[str, Any] = {}
+        if self.from_:
+            edges["from"] = self.from_
+        if self.max_distance:
+            edges["maxDistance" if camel_case else "max_distance"] = self.max_distance
+        if self.direction:
+            edges["direction"] = self.direction
+        if self.filter is not None:
+            edges["filter"] = self.filter.dump()
+        if self.node_filter is not None:
+            edges["nodeFilter" if camel_case else "node_filter"] = self.node_filter.dump()
+        if self.termination_filter is not None:
+            edges["terminationFilter" if camel_case else "termination_filter"] = self.termination_filter.dump()
+        if self.limit_each:
+            edges["limitEach" if camel_case else "limit_each"] = self.limit_each
+        if self.chain_to:
+            edges["chainTo" if camel_case else "chain_to"] = self.chain_to
+
+        output: dict[str, Any] = {"edges": edges}
+        if self.sort:
+            output["sort"] = [s.dump(camel_case=camel_case) for s in self.sort]
+        if self.post_sort:
+            output["postSort" if camel_case else "post_sort"] = [s.dump(camel_case=camel_case) for s in self.post_sort]
+        if self.limit:
+            output["limit"] = self.limit
+        if not self.skip_already_deleted:
+            output["skipAlreadyDeleted" if camel_case else "skip_already_deleted"] = self.skip_already_deleted
+        if self.sync_mode:
+            output["mode"] = self._dump_sync_mode(self.sync_mode, camel_case=camel_case)
+        if self.backfill_sort:
+            output["backfillSort" if camel_case else "backfill_sort"] = [
+                s.dump(camel_case=camel_case) for s in self.backfill_sort
+            ]
+        return output
+
+    def _validate_for_sync(self, name: str) -> None:
+        super()._validate_for_sync(name)
+        if self.post_sort:
+            raise ValueError(
+                f"Result set expression '{name}' has post_sort set, which is not allowed for the sync endpoint."
+            )
+        if self.limit_each is not None:
+            raise ValueError(
+                f"Result set expression '{name}' has limit_each set, which is not allowed for the sync endpoint."
+            )
+
+
+class QueryResult(UserDict):
+    def __init__(self, *args: Any, **kwargs: Any):
+        super().__init__(*args, **kwargs)
+        self._debug: DebugInfo | None = None
+
+    def __getitem__(self, item: str) -> NodeListWithCursor | EdgeListWithCursor:
+        return super().__getitem__(item)
+
+    @property
+    def cursors(self) -> dict[str, str]:
+        return {key: value.cursor for key, value in self.items()}
+
+    @property
+    def debug(self) -> DebugInfo | None:
+        return self._debug
+
+    @classmethod
+    def load(
+        cls,
+        resource: dict[str, Any],
+        instance_list_type_by_result_expression_name: dict[str, type[NodeListWithCursor] | type[EdgeListWithCursor]],
+        cursors: dict[str, Any],
+        typing: dict[str, Any] | None = None,
+        debug: dict[str, Any] | None = None,
+    ) -> QueryResult:
+        from cognite.client.data_classes.data_modeling.debug import DebugInfo
+
+        instance = cls()
+        typing_nodes = TypeInformation._load(typing["nodes"]) if typing and "nodes" in typing else None
+        typing_edges = TypeInformation._load(typing["edges"]) if typing and "edges" in typing else None
+
+        instance._debug = debug_info = DebugInfo._load(debug) if debug is not None else None
+
+        for key, values in resource.items():
+            cursor = cursors.get(key)
+            if not values:
+                # When no results, inspection can't tell us if it's nodes or edges:
+                instance_lst_cls = instance_list_type_by_result_expression_name[key]
+                instance[key] = instance_lst_cls(
+                    [],
+                    cursor=cursor,
+                    typing=typing_nodes if instance_lst_cls is NodeListWithCursor else typing_edges,
+                    debug=debug_info,
+                )
+            elif values[0]["instanceType"] == "node":
+                instance[key] = NodeListWithCursor(
+                    [Node._load(node) for node in values],
+                    cursor=cursor,
+                    typing=typing_nodes,
+                    debug=debug_info,
+                )
+            elif values[0]["instanceType"] == "edge":
+                instance[key] = EdgeListWithCursor(
+                    [Edge._load(edge) for edge in values],
+                    cursor=cursor,
+                    typing=typing_edges,
+                    debug=debug_info,
+                )
+            else:
+                raise ValueError(f"Unexpected instance type {values[0].get('instanceType')}")
+        return instance
+
+    def get_nodes(self, result_expression: str) -> NodeListWithCursor:
+        result = super().__getitem__(result_expression)
+        if isinstance(result, NodeListWithCursor):
+            return result
+        raise RuntimeError(
+            f"{result_expression} is not a {NodeListWithCursor.__name__}. Try {self.get_edges.__name__} instead."
+        )
+
+    def get_edges(self, result_expression: str) -> EdgeListWithCursor:
+        result = super().__getitem__(result_expression)
+        if isinstance(result, EdgeListWithCursor):
+            return result
+        raise RuntimeError(
+            f"{result_expression} is not a {EdgeListWithCursor.__name__}. Try {self.get_nodes.__name__} instead."
+        )
+
+
+class SetOperation(ResultSetExpression, ABC):
+    def __init__(self, except_: SequenceNotStr[str] | None = None, limit: int | None = None) -> None:
+        self.except_ = except_
+        self.limit = limit
+
+    @classmethod
+    def _load(cls, resource: dict[str, Any], cognite_client: CogniteClient | None = None) -> SetOperation:
+        if "union" in resource:
+            return Union._load(resource, cognite_client)
+        elif "unionAll" in resource:
+            return UnionAll._load(resource, cognite_client)
+        elif "intersection" in resource:
+            return Intersection._load(resource, cognite_client)
+        else:
+            raise ValueError(f"Unknown set operation {resource}")
+
+    def _validate_for_query(self, name: str) -> None:
+        return
+
+    def _validate_for_sync(self, name: str) -> None:
+        raise ValueError(f"Result set expression '{name}' uses a set operation, which is not allowed in sync queries.")
+
+
+class Union(SetOperation):
+    def __init__(
+        self, union: Sequence[str | SetOperation], except_: SequenceNotStr[str] | None = None, limit: int | None = None
+    ) -> None:
+        super().__init__(except_=except_, limit=limit)
+        self.union = union
+
+    @classmethod
+    def _load(cls, resource: dict[str, Any], cognite_client: CogniteClient | None = None) -> Union:
+        union = resource["union"]
+        except_ = resource.get("except")
+        return cls(
+            union=[item if isinstance(item, str) else SetOperation._load(item) for item in union],
+            except_=[str(item) for item in except_] if except_ else None,
+            limit=resource.get("limit"),
+        )
+
+    def dump(self, camel_case: bool = True) -> dict[str, Any]:
+        output: dict[str, Any] = {
+            "union": [item if isinstance(item, str) else item.dump(camel_case) for item in self.union]
+        }
+        if self.except_:
+            output["except"] = self.except_
+        if self.limit:
+            output["limit"] = self.limit
+        return output
+
+
+class UnionAll(SetOperation):
+    def __init__(
+        self,
+        union_all: Sequence[str | SetOperation],
+        except_: SequenceNotStr[str] | None = None,
+        limit: int | None = None,
+    ) -> None:
+        super().__init__(except_=except_, limit=limit)
+        self.union_all = union_all
+
+    @classmethod
+    def _load(cls, resource: dict[str, Any], cognite_client: CogniteClient | None = None) -> UnionAll:
+        union = resource["unionAll"]
+        except_ = resource.get("except")
+        return cls(
+            union_all=[item if isinstance(item, str) else SetOperation._load(item) for item in union],
+            except_=[str(item) for item in except_] if except_ else None,
+            limit=resource.get("limit"),
+        )
+
+    def dump(self, camel_case: bool = True) -> dict[str, Any]:
+        output: dict[str, Any] = {
+            "unionAll": [item if isinstance(item, str) else item.dump(camel_case) for item in self.union_all]
+        }
+        if self.except_:
+            output["except"] = self.except_
+        if self.limit:
+            output["limit"] = self.limit
+        return output
+
+
+class Intersection(SetOperation):
+    def __init__(
+        self,
+        intersection: Sequence[str | SetOperation],
+        except_: SequenceNotStr[str] | None = None,
+        limit: int | None = None,
+    ) -> None:
+        super().__init__(except_=except_, limit=limit)
+        self.intersection = intersection
+
+    @classmethod
+    def _load(cls, resource: dict[str, Any], cognite_client: CogniteClient | None = None) -> Intersection:
+        union = resource["intersection"]
+        except_ = resource.get("except")
+        return cls(
+            intersection=[item if isinstance(item, str) else SetOperation._load(item) for item in union],
+            except_=[str(item) for item in except_] if except_ else None,
+            limit=resource.get("limit"),
+        )
+
+    def dump(self, camel_case: bool = True) -> dict[str, Any]:
+        output: dict[str, Any] = {
+            "intersection": [item if isinstance(item, str) else item.dump(camel_case) for item in self.intersection]
+        }
+        if self.except_:
+            output["except"] = self.except_
+        if self.limit:
+            output["limit"] = self.limit
+        return output
