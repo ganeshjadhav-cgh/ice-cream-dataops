@@ -25,7 +25,7 @@ jobs:
       matrix:
         include:
           # Deploy to 'test' environment automatically, only on push to main branch
-          - environment: ${{ inputs.environment != '' && inputs.environment || 'test' }}
+          - environment: ${{ inputs.environment != '' && inputs.environment || 'prod' }}
 
     environment: ${{ matrix.environment }}
     env:
