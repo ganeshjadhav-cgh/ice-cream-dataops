@@ -24,8 +24,8 @@ jobs:
     strategy:
       matrix:
         include:
-          # Deploy to 'test' environment automatically on push, allow manual selection via workflow_dispatch
-          - environment: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || 'test' }}
+          # Deploy to 'test' environment automatically, only on push to main branch
+          - environment: ${{ inputs.environment != '' && inputs.environment || 'test' }}
 
     environment: ${{ matrix.environment }}
     env:
@@ -53,13 +53,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-      - name: Remove local .env files from CI workspace
-        run: |
-          echo "Cleaning .env files in $(pwd)"
-          find "${GITHUB_WORKSPACE:-.}" -maxdepth 2 -type f -name '.env' -print -exec rm -f {} \;
       - name: Verify and Update Toolkit Authorization
         run: yes | cdf auth verify
       - name: Build Toolkit Configurations
         run: cdf build --env=${{ matrix.environment }}
       - name: Deploy Toolkit Configurations
-        run: cdf deploy --env=${{ matrix.environment }} 
+        run: cdf deploy --env=${{ matrix.environment }}
