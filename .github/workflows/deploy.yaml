@@ -53,6 +53,11 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+      - name: Remove local CDF_PROJECT override from .env
+        run: |
+          if [ -f .env ]; then
+            sed -i '/^CDF_PROJECT=/d' .env
+          fi
       - name: Verify and Update Toolkit Authorization
         run: yes | cdf auth verify
       - name: Build Toolkit Configurations
