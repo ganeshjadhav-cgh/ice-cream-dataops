@@ -30,7 +30,7 @@ jobs:
     environment: ${{ matrix.environment }}
     env:
       # Cognite Toolkit environment variables
-      CDF_PROJECT: ganesh-project-${{ matrix.environment }} # change <n> to your project number!
+      CDF_PROJECT: ${{ matrix.environment == 'prod' && 'ganesh-prod-project' || 'ganesh-project'}} # change <n> to your project number!
 
       CDF_CLUSTER: bluefield
       IDP_TENANT_ID: 47e6bc76-3294-480a-b5b8-6f2a3e82dc86

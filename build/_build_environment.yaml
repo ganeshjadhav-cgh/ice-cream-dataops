@@ -237,18 +237,18 @@ read_modules:
   - auth
 - dir: /workspaces/ice-cream-dataops/ice-cream-dataops/modules/bootcamp/ice_cream_api
   resource_directories:
-  - transformations
-  - data_sets
+  - extraction_pipelines
   - workflows
-  - functions
-  - data_models
-  - hosted_extractors
   - auth
   - raw
-  - extraction_pipelines
+  - data_sets
+  - transformations
+  - data_models
+  - functions
+  - hosted_extractors
 - dir: /workspaces/ice-cream-dataops/ice-cream-dataops/modules/bootcamp/use_cases/oee
   resource_directories:
-  - data_models
-  - data_sets
-  - functions
   - auth
+  - functions
+  - data_sets
+  - data_models
