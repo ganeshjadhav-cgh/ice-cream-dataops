@@ -24,8 +24,8 @@ jobs:
     strategy:
       matrix:
         include:
-          # Deploy to 'test' environment automatically, only on push to main branch
-          - environment: ${{ inputs.environment != '' && inputs.environment || 'test' }}
+          # Deploy to 'test' environment automatically on push, allow manual selection via workflow_dispatch
+          - environment: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || 'test' }}
 
     environment: ${{ matrix.environment }}
     env:
