@@ -53,11 +53,10 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-      - name: Remove local CDF_PROJECT override from .env
+      - name: Remove local .env files from CI workspace
         run: |
-          if [ -f .env ]; then
-            sed -i '/^CDF_PROJECT=/d' .env
-          fi
+          echo "Cleaning .env files in $(pwd)"
+          find "${GITHUB_WORKSPACE:-.}" -maxdepth 2 -type f -name '.env' -print -exec rm -f {} \;
       - name: Verify and Update Toolkit Authorization
         run: yes | cdf auth verify
       - name: Build Toolkit Configurations
